@@ -1,12 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"krpc"
-	"krpc/codec"
 	"log"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -24,30 +23,23 @@ func start(addr chan string) {
 func main() {
 	addr := make(chan string)
 	go start(addr)
+	client, _ := krpc.Dial("tcp", <-addr)
+	defer func() { _ = client.Close() }()
 
-	//client
-	conn, err := net.Dial("tcp", <-addr)
-	if err != nil {
-		log.Println("net dial err:", err)
-		return
-	}
-
-	defer func() { _ = conn.Close() }()
-
-	time.Sleep(time.Second)
-
-	_ = json.NewEncoder(conn).Encode(krpc.DefaultOption)
-	c := codec.NewJsonCodec(conn)
-
+	time.Sleep(time.Second * 2)
+	// send request & receive response
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		h := &codec.Header{
-			ServiceMethod: "Service.Test",
-			Seq:           uint64(i),
-		}
-		_ = c.Write(h, fmt.Sprintf("krpc req %d", h.Seq))
-		_ = c.ReadHeader(h)
-		var reply string
-		_ = c.ReadBody(&reply)
-		log.Println("reply:", reply)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := fmt.Sprintf("krpc req %d", i)
+			var reply string
+			if err := client.Call("Service.Test", args, &reply); err != nil {
+				log.Fatal("call service error:", err)
+			}
+			log.Println("reply:", reply)
+		}(i)
 	}
+	wg.Wait()
 }
