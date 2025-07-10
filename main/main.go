@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"krpc"
 	"log"
 	"net"
@@ -9,7 +8,22 @@ import (
 	"time"
 )
 
+type Service int
+
+type Args struct{ Num1, Num2 int }
+
+func (f Service) Sum(args Args, reply *int) error {
+	*reply = args.Num1 + args.Num2
+	return nil
+}
+
 func start(addr chan string) {
+	var s Service
+	err := krpc.Register(&s)
+	if err != nil {
+		log.Println("register err:", err)
+		return
+	}
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
 		log.Fatal("listen error:", err)
@@ -26,19 +40,19 @@ func main() {
 	client, _ := krpc.Dial("tcp", <-addr)
 	defer func() { _ = client.Close() }()
 
-	time.Sleep(time.Second * 2)
+	time.Sleep(time.Second)
 	// send request & receive response
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			args := fmt.Sprintf("krpc req %d", i)
-			var reply string
-			if err := client.Call("Service.Test", args, &reply); err != nil {
+			args := &Args{Num1: i, Num2: i * i}
+			var reply int
+			if err := client.Call("Service.Sum", args, &reply); err != nil {
 				log.Fatal("call service error:", err)
 			}
-			log.Println("reply:", reply)
+			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
 	wg.Wait()
