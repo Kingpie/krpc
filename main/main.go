@@ -5,8 +5,8 @@ import (
 	"krpc"
 	"log"
 	"net"
+	"net/http"
 	"sync"
-	"time"
 )
 
 type Service int
@@ -25,28 +25,22 @@ func start(addr chan string) {
 		log.Println("register err:", err)
 		return
 	}
-	l, err := net.Listen("tcp", ":0")
+	l, err := net.Listen("tcp", ":9527")
 	if err != nil {
 		log.Fatal("listen error:", err)
 		return
 	}
+	krpc.HandleHTTP()
 	log.Println("start rpc server on", l.Addr())
 	addr <- l.Addr().String()
-	krpc.Accept(l)
+	_ = http.Serve(l, nil)
 }
 
-func main() {
-	addr := make(chan string)
-	go start(addr)
-	client, err := krpc.Dial("tcp", <-addr)
-	if err != nil {
-		log.Fatal("dial error:", err)
-		return
-	}
-	ctx, _ := context.WithTimeout(context.Background(), time.Second)
+func call(addrChan chan string) {
+	client, _ := krpc.DialHTTP("tcp", <-addrChan)
 	defer func() { _ = client.Close() }()
 
-	time.Sleep(time.Second)
+	// send request & receive response
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
@@ -54,11 +48,17 @@ func main() {
 			defer wg.Done()
 			args := &Args{Num1: i, Num2: i * i}
 			var reply int
-			if err := client.Call(ctx, "Service.Minus", args, &reply); err != nil {
-				log.Fatal("call service error:", err)
+			if err := client.Call(context.Background(), "Service.Minus", args, &reply); err != nil {
+				log.Fatal("call Service.Minus error:", err)
 			}
 			log.Printf("%d - %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
 	wg.Wait()
+}
+
+func main() {
+	ch := make(chan string)
+	go call(ch)
+	start(ch)
 }
