@@ -3,6 +3,7 @@ package krpc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"krpc/codec"
 	"log"
@@ -10,18 +11,22 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 const MagicNumber = 9527
 
 type Option struct {
-	MagicNumber int //make sure this is a krpc request
-	CodecType   codec.Type
+	MagicNumber    int //make sure this is a krpc request
+	CodecType      codec.Type
+	ConnectTimeout time.Duration
+	HandleTimeout  time.Duration
 }
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.JsonType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.JsonType,
+	ConnectTimeout: 10 * time.Second,
 }
 
 type Server struct {
@@ -52,7 +57,7 @@ func Accept(l net.Listener) { DefaultServer.Accept(l) }
 // 参数:
 //
 //	cc: codec.Codec 接口，用于编解码请求和响应数据
-func (server *Server) serveCodec(cc codec.Codec) {
+func (server *Server) serveCodec(cc codec.Codec, opt *Option) {
 	// sending 互斥锁确保响应发送的完整性，避免多个 goroutine 同时发送数据造成混乱
 	sending := new(sync.Mutex)
 	// wg 等待组用于等待所有请求处理 goroutine 完成后再关闭连接
@@ -74,7 +79,7 @@ func (server *Server) serveCodec(cc codec.Codec) {
 		}
 		// 增加等待组计数，启动新的 goroutine 处理请求
 		wg.Add(1)
-		go server.handleRequest(cc, req, sending, wg)
+		go server.handleRequest(cc, req, sending, wg, opt.HandleTimeout)
 	}
 
 	// 等待所有请求处理完成
@@ -113,7 +118,7 @@ func (server *Server) ServeConn(conn io.ReadWriteCloser) {
 	}
 
 	// 使用指定编解码器处理具体的RPC调用
-	server.serveCodec(f(conn))
+	server.serveCodec(f(conn), &opt)
 }
 
 // when error occurs,invalidRequest is a placeholder for response
@@ -205,20 +210,42 @@ func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interfa
 // req: 请求对象，包含服务调用的相关信息
 // sending: 互斥锁，确保响应发送的线程安全
 // wg: 等待组，用于同步多个请求的完成
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
 
-	// 调用实际的服务方法
-	err := req.svc.call(req.mtype, req.argv, req.reply)
-	if err != nil {
-		// 服务调用出错，设置错误信息并发送错误响应
-		req.h.Error = err.Error()
-		server.sendResponse(cc, req.h, invalidRequest, sending)
+	called := make(chan struct{})
+	sent := make(chan struct{})
+
+	go func() {
+		// 调用实际的服务方法
+		err := req.svc.call(req.mtype, req.argv, req.reply)
+		if err != nil {
+			// 服务调用出错，设置错误信息并发送错误响应
+			req.h.Error = err.Error()
+			server.sendResponse(cc, req.h, invalidRequest, sending)
+			return
+		}
+
+		// 服务调用成功，发送正常响应
+		server.sendResponse(cc, req.h, req.reply.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	//无超时限制
+	if timeout == 0 {
+		<-called
+		<-sent
 		return
 	}
 
-	// 服务调用成功，发送正常响应
-	server.sendResponse(cc, req.h, req.reply.Interface(), sending)
+	//超时处理
+	select {
+	case <-time.After(timeout):
+		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expect within %s", timeout)
+		server.sendResponse(cc, req.h, invalidRequest, sending)
+	case <-called:
+		<-sent
+	}
 }
 
 // Register publishes in the server the set of methods of the
