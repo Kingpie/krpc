@@ -8,7 +8,7 @@ import (
 
 const debugText = `<html>
 	<body>
-	<title>GeeRPC Services</title>
+	<title>KRPC Services</title>
 	{{range .}}
 	<hr>
 	Service {{.Name}}
@@ -38,6 +38,14 @@ type debugService struct {
 }
 
 // Runs at /debug/krpc
+// ServeHTTP implements the http.Handler interface for debugHTTP.
+// It handles HTTP requests for debugging RPC services by rendering
+// a template with available service information.
+//
+// Parameters:
+//
+//	w: the HTTP response writer to write the debug information to
+//	req: the incoming HTTP request
 func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Build a sorted version of the data.
 	var services []debugService
@@ -49,6 +57,8 @@ func (server debugHTTP) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		})
 		return true
 	})
+
+	// Execute the debug template with the collected services data
 	err := debug.Execute(w, services)
 	if err != nil {
 		_, _ = fmt.Fprintln(w, "rpc: error executing template:", err.Error())
